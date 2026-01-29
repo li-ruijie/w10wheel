@@ -1,0 +1,99 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 2.8)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set version
+        shell: pwsh
+        run: |
+          $file = "W10Wheel/src/AssemblyInfo.fs"
+          $content = Get-Content $file -Raw
+          $version = "${{ inputs.version }}"
+          $fullVersion = "$version.0.0"
+
+          Write-Host "Setting version to $fullVersion"
+
+          # Update AssemblyVersion and AssemblyFileVersion
+          $content = $content -replace 'AssemblyVersion\("\d+\.\d+\.\d+\.\d+"\)', "AssemblyVersion(`"$fullVersion`")"
+          $content = $content -replace 'AssemblyFileVersion\("\d+\.\d+\.\d+\.\d+"\)', "AssemblyFileVersion(`"$fullVersion`")"
+
+          Set-Content $file $content -NoNewline
+
+          # Set output for later steps
+          echo "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: msbuild W10Wheel/W10Wheel.fsproj -p:Configuration=Release -restore
+
+      - name: Commit version
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add W10Wheel/src/AssemblyInfo.fs
+          $status = git status --porcelain
+          if ($status) {
+            git commit -m "Release v$env:VERSION"
+            git push
+          }
+
+      - name: Prepare release files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "W10Wheel/bin/Release/W10Wheel.exe" "dist/"
+          Copy-Item "W10Wheel/bin/Release/FSharp.Core.dll" "dist/"
+          Copy-Item "LICENSE.txt" "dist/"
+          Copy-Item "README.md" "dist/"
+          Compress-Archive -Path "dist/*" -DestinationPath "W10Wheel.NET-v${{ env.VERSION }}.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: W10Wheel.NET v${{ env.VERSION }}
+          body: |
+            ## W10Wheel.NET v${{ env.VERSION }}
+
+            ## Installation
+
+            1. Extract the zip file to any folder
+            2. Run `W10Wheel.exe`
+            3. The app runs in the system tray
+
+            ## Requirements
+
+            - Windows 10/11
+            - .NET Framework 4.8.1 (included in Windows 10 21H2+ and Windows 11)
+          files: W10Wheel.NET-v${{ env.VERSION }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: W10Wheel.NET-v${{ env.VERSION }}
+          path: |
+            W10Wheel/bin/Release/W10Wheel.exe
+            W10Wheel/bin/Release/FSharp.Core.dll
